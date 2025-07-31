@@ -60,7 +60,7 @@ export default function App() {
           projectId: "shopping-list-demo-5f3ad",
           storageBucket: "shopping-list-demo-5f3ad.firebasestorage.app",
           messagingSenderId: "231119785010",
-          appId: "1:231119785010:web:2ebb7789fe6727eff01402b",
+          appId: "1:231119785010:web:2ebb789fe6727eff01402b",
           measurementId: "G-7Z1179RC0V"
         };
 
