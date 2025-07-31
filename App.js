@@ -3,46 +3,34 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 
 // Firebase Imports
-import { getAnalytics } from "firebase/analytics"; // Keep Analytics import here
+import { getAnalytics } from "firebase/analytics";
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 
-// Import ALL Firebase Auth functions directly (modern approach)
-import {
-  browserLocalPersistence as _browserLocalPersistence,
-  getAuth as _getAuth,
-  getReactNativePersistence as _getReactNativePersistence,
-  initializeAuth as _initializeAuth,
-  onAuthStateChanged as _onAuthStateChanged,
-  setPersistence as _setPersistence,
-} from 'firebase/auth';
-
-// Only import AsyncStorage for React Native platforms
-// Use a try-catch to prevent web build failures if not properly excluded by bundler
+// Import Firebase Auth - different approaches for web vs React Native
+let onAuthStateChanged;
+let initializeAuth, getReactNativePersistence, getAuth, browserLocalPersistence, setPersistence;
 let ReactNativeAsyncStorage;
-try {
-  if (Platform.OS !== 'web') {
-    ReactNativeAsyncStorage = require('@react-native-async-storage/async-storage').default;
-  }
-} catch (error) {
-  console.warn('Could not import @react-native-async-storage/async-storage. This is expected on web, but an error on native:', error);
-}
 
-// Declare variables to hold platform-specific auth functions
-let onAuthStateChanged, initializeAuth, getReactNativePersistence, getAuth, browserLocalPersistence, setPersistence;
-
-// Conditionally assign based on platform
+// Platform-specific imports at module level
 if (Platform.OS === 'web') {
-  onAuthStateChanged = _onAuthStateChanged;
-  getAuth = _getAuth;
-  browserLocalPersistence = _browserLocalPersistence;
-  setPersistence = _setPersistence;
-  // initializeAuth and getReactNativePersistence are not used on web
+  // Web imports
+  const firebaseAuth = require('firebase/auth');
+  getAuth = firebaseAuth.getAuth;
+  browserLocalPersistence = firebaseAuth.browserLocalPersistence;
+  setPersistence = firebaseAuth.setPersistence;
+  onAuthStateChanged = firebaseAuth.onAuthStateChanged;
 } else {
-  onAuthStateChanged = _onAuthStateChanged;
-  initializeAuth = _initializeAuth;
-  getReactNativePersistence = _getReactNativePersistence;
-  // getAuth, browserLocalPersistence, setPersistence are not used in this specific RN setup logic here
+  // React Native imports
+  try {
+    ReactNativeAsyncStorage = require('@react-native-async-storage/async-storage').default;
+    const firebaseAuth = require('firebase/auth');
+    initializeAuth = firebaseAuth.initializeAuth;
+    getReactNativePersistence = firebaseAuth.getReactNativePersistence;
+    onAuthStateChanged = firebaseAuth.onAuthStateChanged;
+  } catch (error) {
+    console.error('Error importing React Native dependencies:', error);
+  }
 }
 
 // React Navigation Imports
@@ -79,76 +67,68 @@ export default function App() {
         // Initialize Firebase app
         const app = initializeApp(firebaseConfig);
         const firestoreDb = getFirestore(app);
-
-        // Initialize Analytics only if not in development
-        if (!__DEV__) {
+        
+        // Initialize Analytics only in production and if properly configured
+        if (!__DEV__ && typeof window !== 'undefined') {
           try {
+            // Only initialize analytics if we're in a proper web environment
             getAnalytics(app);
           } catch (analyticsError) {
             console.warn('Analytics initialization failed:', analyticsError);
+            // Don't fail the entire app if analytics fails
           }
         }
 
-        let firebaseAuthInstance; // Renamed to avoid confusion with the module itself
+        let firebaseAuth;
 
         // Platform-specific Firebase Auth initialization
         if (Platform.OS === 'web') {
           // Web-specific Firebase Auth setup
-          firebaseAuthInstance = getAuth(app);
-
+          firebaseAuth = getAuth(app);
+          
           // Set persistence for web
           try {
-            if (setPersistence && browserLocalPersistence) { // Ensure functions are defined
-              await setPersistence(firebaseAuthInstance, browserLocalPersistence);
-            } else {
-              console.warn('Web persistence functions not available, skipping.');
-            }
+            await setPersistence(firebaseAuth, browserLocalPersistence);
           } catch (persistenceError) {
             console.warn('Web persistence setup failed:', persistenceError);
           }
         } else {
           // React Native-specific Firebase Auth setup
           if (!ReactNativeAsyncStorage || !initializeAuth || !getReactNativePersistence) {
-            throw new Error('React Native Firebase Auth dependencies not available. Ensure @react-native-async-storage/async-storage is installed and correctly linked.');
+            throw new Error('React Native dependencies not available');
           }
-
-          firebaseAuthInstance = initializeAuth(app, {
+          
+          firebaseAuth = initializeAuth(app, {
             persistence: getReactNativePersistence(ReactNativeAsyncStorage)
           });
         }
 
         setDb(firestoreDb);
-        setAuth(firebaseAuthInstance);
+        setAuth(firebaseAuth);
 
         // Set up auth state listener
-        // Ensure onAuthStateChanged is defined before calling it
-        if (onAuthStateChanged) {
-          const unsubscribe = onAuthStateChanged(firebaseAuthInstance, async (user) => {
-            if (user) {
-              setUserId(user.uid);
-              console.log("User signed in:", user.uid);
-            } else {
-              console.log("No user signed in. Ready to prompt for sign-in.");
-              setUserId(null);
-            }
-            setIsLoading(false); // Set loading to false once auth state is determined
-          });
+        const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+          if (user) {
+            setUserId(user.uid);
+            console.log("User signed in:", user.uid);
+          } else {
+            console.log("No user signed in. Ready to prompt for sign-in.");
+            setUserId(null);
+          }
+          setIsLoading(false);
+        });
 
-          return () => unsubscribe(); // Cleanup the listener
-        } else {
-          console.error("onAuthStateChanged function is not defined. Firebase Auth setup issue.");
-          setIsLoading(false); // Stop loading even if auth listener couldn't be set
-        }
+        return () => unsubscribe();
 
       } catch (error) {
         console.error("Error initializing Firebase:", error);
-        alert("Failed to initialize app. Please check your network or try again. Error: " + error.message);
+        alert("Failed to initialize app. Please check your network or try again.");
         setIsLoading(false);
       }
     }
 
     initializeFirebaseAndAuth();
-  }, []); // Empty dependency array means this runs once on mount
+  }, []);
 
   if (isLoading) {
     return (
@@ -159,17 +139,15 @@ export default function App() {
     );
   }
 
-  // Handle case where Firebase initialization itself failed (db or auth are null)
   if (!db || !auth) {
     return (
       <View style={styles.errorContainer}>
-        <Text style={styles.errorText}>Failed to initialize Firebase. Please check your setup and console for errors.</Text>
+        <Text style={styles.errorText}>Failed to initialize Firebase. Please check your setup.</Text>
       </View>
     );
   }
 
   if (!userId) {
-    // Pass the auth instance to SignInScreen
     return (
       <SignInScreen auth={auth} />
     );

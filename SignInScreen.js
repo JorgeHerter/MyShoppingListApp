@@ -3,102 +3,73 @@ import { makeRedirectUri } from 'expo-auth-session';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
 import {
-    createUserWithEmailAndPassword,
-    GoogleAuthProvider, // Used for Google sign-in
-    onAuthStateChanged, // To listen for auth state changes
-    signInWithCredential,
-    signInWithEmailAndPassword
+  createUserWithEmailAndPassword,
+  GoogleAuthProvider,
+  signInWithCredential,
+  signInWithEmailAndPassword
 } from 'firebase/auth';
 import { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 
 // Ensure WebBrowser is closed when the app is focused
 WebBrowser.maybeCompleteAuthSession();
 
-export default function SignInScreen({ auth, navigation }) {
+export default function SignInScreen({ auth }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isRegistering, setIsRegistering] = useState(false); // State to toggle between sign-in/register
+  const [isRegistering, setIsRegistering] = useState(false);
 
-  // Google OAuth configuration
+  // Google OAuth configuration with proper web support
   const [request, response, promptAsync] = Google.useAuthRequest({
     expoClientId: Platform.select({
-      web: '231119785010-ljas6ahbcr1k1fi7d824egknqitq43es.apps.googleusercontent.com', // Your Web Client ID
-      ios: '231119785010-rsjvmqq7836bblr5s583ehc2rkj2h5e1.apps.googleusercontent.com', // Your iOS Client ID
-      android: '231119785010-c4hd37ol1vqutqeddlf4dkbdglrc5c5e.apps.googleusercontent.com', // Your Android Client ID
+      web: '231119785010-ljas6ahbcr1k1fi7d824egknqitq43es.apps.googleusercontent.com',
+      ios: '231119785010-ljas6ahbcr1k1fi7d824egknqitq43es.apps.googleusercontent.com',
+      android: '231119785010-ljas6ahbcr1k1fi7d824egknqitq43es.apps.googleusercontent.com',
     }),
     webClientId: '231119785010-ljas6ahbcr1k1fi7d824egknqitq43es.apps.googleusercontent.com',
-    iosClientId: '231119785010-rsjvmqq7836bblr5s583ehc2rkj2h5e1.apps.googleusercontent.com',
-    androidClientId: '231119785010-c4hd37ol1vqutqeddlf4dkbdglrc5c5e.apps.googleusercontent.com',
-    redirectUri: makeRedirectUri({ useProxy: true }),
-    scopes: ['openid', 'profile', 'email'],
-    responseType: 'id_token', // Requesting an ID token
+    redirectUri: makeRedirectUri({ 
+      useProxy: Platform.OS !== 'web', // Don't use proxy in web production
+      scheme: Platform.OS === 'web' ? 'https' : undefined 
+    }),
   });
 
   // Listen for Google OAuth response
   useEffect(() => {
     if (response?.type === 'success') {
-      // Keep these logs for debugging if any new issues arise
-      console.log('Google Auth Response (Success Type):', response);
-      // console.log('Response when id_token is missing (will now be under params):', response); // This log might not be hit anymore, but useful to keep for a moment
-
-      // --- CRITICAL CHANGE HERE ---
-      // Changed the check and extraction to use `response.params.id_token`
-      if (response.params && response.params.id_token) {
-        const id_token = response.params.id_token; // <--- EXTRACT ID TOKEN FROM response.params
-        const credential = GoogleAuthProvider.credential(id_token);
-        setLoading(true);
-        signInWithCredential(auth, credential)
-          .then(() => {
-            console.log('Google sign-in successful!');
-            // Navigation is now handled by App.js's onAuthStateChanged listener
-          })
-          .catch(error => {
-            console.error('Google sign-in error:', error);
-            Alert.alert('Google Sign-In Failed', error.message);
-          })
-          .finally(() => {
-            setLoading(false);
-          });
-      } else {
-        // This 'else' block should ideally not be hit if a successful response contains an id_token in params
-        console.error('Google sign-in response missing id_token in params. Unexpected structure:', response);
-        Alert.alert('Google Sign-In Error', 'Authentication token missing from response. Please try again.');
-        setLoading(false);
-      }
+      const { id_token } = response.authentication;
+      const credential = GoogleAuthProvider.credential(id_token);
+      setLoading(true);
+      signInWithCredential(auth, credential)
+        .then(() => {
+          console.log('Google sign-in successful!');
+          // App.js auth state listener will handle navigation
+        })
+        .catch(error => {
+          console.error('Google sign-in error:', error);
+          Alert.alert('Google Sign-In Failed', error.message);
+        })
+        .finally(() => {
+          setLoading(false);
+        });
     } else if (response?.type === 'cancel') {
       console.log('Google sign-in cancelled.');
       setLoading(false);
     } else if (response?.type === 'error') {
       console.error('Google sign-in response error:', response.error);
-      Alert.alert('Google Sign-In Error', response.error?.error_description || response.error);
+      Alert.alert('Google Sign-In Error', response.error);
       setLoading(false);
     }
   }, [response, auth]);
-
-  // The onAuthStateChanged listener in App.js now handles navigation
-  // This useEffect in SignInScreen is primarily for logging and local state management
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, user => {
-      if (user) {
-        console.log('User signed in:', user.uid);
-        // Removed navigation.replace here as App.js handles it
-      } else {
-        console.log('No user signed in. Ready to prompt for sign-in.');
-      }
-    });
-    return unsubscribe;
-  }, [auth]); // Removed 'navigation' from dependency array as it's no longer used for navigation here
 
   const handleEmailAuth = async () => {
     setLoading(true);
@@ -110,7 +81,7 @@ export default function SignInScreen({ auth, navigation }) {
         await signInWithEmailAndPassword(auth, email, password);
         Alert.alert('Success', 'Signed in successfully!');
       }
-      // Navigation handled by onAuthStateChanged listener in App.js
+      // App.js auth state listener will handle navigation
     } catch (error) {
       console.error('Email/Password Auth Error:', error);
       Alert.alert('Authentication Error', error.message);
@@ -126,7 +97,7 @@ export default function SignInScreen({ auth, navigation }) {
     }
     setLoading(true);
     try {
-      await promptAsync(); // This opens the browser for Google sign-in
+      await promptAsync();
     } catch (error) {
       console.error('Error prompting Google sign-in:', error);
       Alert.alert('Google Sign-In Error', error.message);
@@ -229,7 +200,7 @@ const styles = StyleSheet.create({
     width: '100%',
     padding: 15,
     borderRadius: 8,
-    backgroundColor: '#007AFF', // Primary blue
+    backgroundColor: '#007AFF',
     alignItems: 'center',
     marginBottom: 10,
   },
@@ -239,7 +210,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   googleButton: {
-    backgroundColor: '#DB4437', // Google red
+    backgroundColor: '#DB4437',
   },
   toggleButton: {
     marginTop: 20,
