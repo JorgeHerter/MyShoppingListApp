@@ -24,8 +24,6 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
   // States for the new list form
   const [listName, setListName] = useState("");
   const [item1, setItem1] = useState("");
-  // Removed item2, as per your updated form structure which only has 'Add Items'
-  // If you want multiple item inputs, you'll need to re-add setItem2 and the corresponding TextInput
 
   const fetchShoppingLists = async () => {
     try {
@@ -35,13 +33,11 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
 
       if (!db || !userId) {
         console.warn("Firestore DB or User ID not available yet for fetching lists. Skipping fetch.");
-        // If there's no userId, there are no lists to fetch for this user
         setShoppingLists([]);
         setLoadingLists(false);
         return;
       }
 
-      // MODIFIED QUERY: Only fetch documents where ownerId matches the current userId
       const q = query(collection(db, "shoppinglists"), where("ownerId", "==", userId));
       const listsDocuments = await getDocs(q);
 
@@ -50,7 +46,7 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
       let newLists = [];
       listsDocuments.forEach(docObject => {
         const data = docObject.data();
-        if (data.name && Array.isArray(data.items) && data.ownerId) { // Also check for ownerId
+        if (data.name && Array.isArray(data.items) && data.ownerId) {
           newLists.push({ id: docObject.id, ...data });
         } else {
           console.warn(`Document ${docObject.id} missing 'name', 'items' array, or 'ownerId'. Skipping.`);
@@ -70,14 +66,12 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
 
 
   const addShoppingList = async () => {
-    // Check if listName is empty OR if item1 is empty
     if (!listName.trim() || !item1.trim()) {
       Alert.alert("Missing Information", "Please enter a list name and at least one item.");
       return;
     }
 
     try {
-      // Split the single item1 input by commas and trim each item
       const itemsArray = item1.split(',').map(item => item.trim()).filter(item => item !== '');
 
       if (itemsArray.length === 0) {
@@ -88,7 +82,7 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
       const newListData = {
         name: listName.trim(),
         items: itemsArray,
-        ownerId: userId, // CRITICAL: Add ownerId here for security rules
+        ownerId: userId,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -99,10 +93,8 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
         fetchShoppingLists();
         Alert.alert(`Success`, `The list "${listName.trim()}" has been added.`);
 
-        // Clear the form
         setListName('');
         setItem1('');
-        // setItem2(''); // Removed as per your updated form
       } else {
         Alert.alert("Error", "Unable to add list. Please try again later.");
       }
@@ -122,7 +114,7 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
           Platform.OS === 'web' ? window.alert('Error: Database not initialized. Cannot delete list.') : Alert.alert('Error', 'Database not initialized. Cannot delete list.');
           return;
         }
-        if (!userId) { // Added check for userId here before attempting delete
+        if (!userId) {
           console.warn("User ID is null or undefined when attempting delete.");
           Platform.OS === 'web' ? window.alert('Error: User not authenticated. Cannot delete list.') : Alert.alert('Error', 'User not authenticated. Cannot delete list.');
           return;
@@ -176,27 +168,23 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
   };
 
   useEffect(() => {
-    // Only fetch lists if userId is available.
-    // The dependency array will re-run this when userId changes (e.g., on sign-in)
     if (userId) {
       fetchShoppingLists();
     } else {
-      // Clear lists if user logs out or userId becomes null
       setShoppingLists([]);
       setLoadingLists(false);
       console.log("No userId, not fetching shopping lists.");
     }
 
     const unsubscribeFocus = navigation.addListener('focus', () => {
-      if (userId) { // Re-fetch on focus only if user is logged in
+      if (userId) {
         fetchShoppingLists();
       }
     });
     return unsubscribeFocus;
-  }, [db, userId, navigation]); // Added userId to dependency array
+  }, [db, userId, navigation]);
 
   const handleEditList = (list) => {
-    // Ensure the user owns the list before navigating to edit
     if (list.ownerId === userId) {
       navigation.navigate('CreateEditList', { list: list });
     } else {
@@ -212,8 +200,6 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
     try {
       await signOut(auth);
       console.log("User signed out successfully.");
-      // After sign out, the userId prop will likely become null,
-      // which will trigger the useEffect to clear lists.
     } catch (error) {
       console.error("Error signing out:", error);
       Alert.alert("Failed to sign out: " + error.message);
@@ -247,7 +233,7 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
 
       {/* Only show "Logged in as" if userId is available */}
       {userId ? <Text style={styles.userIdText}>Logged in as: {userId}</Text> :
-                <Text style={styles.userIdText}>Not logged in.</Text>}
+        <Text style={styles.userIdText}>Not logged in.</Text>}
 
       {/* Only show New List Form if userId is available */}
       {userId ? (
@@ -264,7 +250,6 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
             value={item1}
             onChangeText={setItem1}
           />
-          {/* Removed item2 TextInput */}
           <TouchableOpacity
             style={styles.addButton}
             onPress={addShoppingList}
@@ -276,16 +261,21 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
         <Text style={styles.noListsText}>Please sign in to add or view your shopping lists.</Text>
       )}
 
+      {/* NEW: Click to Edit Hint */}
+      {/* Only show this hint if there are lists and the user is logged in and not loading */}
+      {shoppingLists.length > 0 && userId && !loadingLists && (
+        <Text style={styles.editHintText}>Click a list to edit</Text>
+      )}
 
       {/* Conditionally render FlatList or message */}
-      {shoppingLists.length === 0 && !loadingLists && userId ? ( // Added userId check here
+      {shoppingLists.length === 0 && !loadingLists && userId ? (
         <Text style={styles.noListsText}>No shopping lists found for you. Start by adding some!</Text>
       ) : (
         <FlatList
           style={styles.listsContainer}
           data={shoppingLists}
           keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
+          renderItem={({ item }) => (
             <View style={styles.listItemContainer}>
               {/* Only allow editing if the current user owns the list */}
               <TouchableOpacity onPress={() => handleEditList(item)} style={styles.listItem}>
@@ -364,7 +354,7 @@ const styles = StyleSheet.create({
   listsContainer: {
     flex: 1,
     width: '100%',
-    marginTop: 20,
+    marginTop: 20, // Adjusted margin to accommodate the hint text
   },
   listItemContainer: {
     flexDirection: 'row',
@@ -442,5 +432,15 @@ const styles = StyleSheet.create({
     color: "#FFF",
     fontWeight: "600",
     fontSize: 20,
+  },
+  // NEW STYLE FOR THE HINT TEXT
+  editHintText: {
+    fontSize: 14,
+    color: '#888', // A softer grey color
+    textAlign: 'center',
+    marginTop: 10, // Space after the new list form
+    marginBottom: 10, // Space before the FlatList
+    fontStyle: 'italic', // Make it slightly distinct
+    width: '100%',
   },
 });

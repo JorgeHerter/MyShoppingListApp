@@ -1,4 +1,5 @@
 // SignInScreen.js
+import { Ionicons } from '@expo/vector-icons'; // Import Ionicons
 import { makeRedirectUri } from 'expo-auth-session';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
@@ -9,7 +10,7 @@ import {
   signInWithCredential,
   signInWithEmailAndPassword
 } from 'firebase/auth';
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react'; // Import React
 import {
   ActivityIndicator,
   Alert,
@@ -28,7 +29,9 @@ export default function SignInScreen({ auth, navigation }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isRegistering, setIsRegistering] = useState(false); // State to toggle between sign-in/register
+  const [isRegistering, setIsRegistering] = useState(false);
+  // NEW STATE for password visibility
+  const [showPassword, setShowPassword] = useState(false);
 
   // Google OAuth configuration
   const [request, response, promptAsync] = Google.useAuthRequest({
@@ -48,20 +51,14 @@ export default function SignInScreen({ auth, navigation }) {
   // Listen for Google OAuth response
   useEffect(() => {
     if (response?.type === 'success') {
-      // Keep these logs for debugging if any new issues arise
       console.log('Google Auth Response (Success Type):', response);
-      // console.log('Response when id_token is missing (will now be under params):', response); // This log might not be hit anymore, but useful to keep for a moment
-
-      // --- CRITICAL CHANGE HERE ---
-      // Changed the check and extraction to use `response.params.id_token`
       if (response.params && response.params.id_token) {
-        const id_token = response.params.id_token; // <--- EXTRACT ID TOKEN FROM response.params
+        const id_token = response.params.id_token;
         const credential = GoogleAuthProvider.credential(id_token);
         setLoading(true);
         signInWithCredential(auth, credential)
           .then(() => {
             console.log('Google sign-in successful!');
-            // Navigation is now handled by App.js's onAuthStateChanged listener
           })
           .catch(error => {
             console.error('Google sign-in error:', error);
@@ -71,7 +68,6 @@ export default function SignInScreen({ auth, navigation }) {
             setLoading(false);
           });
       } else {
-        // This 'else' block should ideally not be hit if a successful response contains an id_token in params
         console.error('Google sign-in response missing id_token in params. Unexpected structure:', response);
         Alert.alert('Google Sign-In Error', 'Authentication token missing from response. Please try again.');
         setLoading(false);
@@ -86,19 +82,16 @@ export default function SignInScreen({ auth, navigation }) {
     }
   }, [response, auth]);
 
-  // The onAuthStateChanged listener in App.js now handles navigation
-  // This useEffect in SignInScreen is primarily for logging and local state management
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, user => {
       if (user) {
         console.log('User signed in:', user.uid);
-        // Removed navigation.replace here as App.js handles it
       } else {
         console.log('No user signed in. Ready to prompt for sign-in.');
       }
     });
     return unsubscribe;
-  }, [auth]); // Removed 'navigation' from dependency array as it's no longer used for navigation here
+  }, [auth]);
 
   const handleEmailAuth = async () => {
     setLoading(true);
@@ -110,7 +103,6 @@ export default function SignInScreen({ auth, navigation }) {
         await signInWithEmailAndPassword(auth, email, password);
         Alert.alert('Success', 'Signed in successfully!');
       }
-      // Navigation handled by onAuthStateChanged listener in App.js
     } catch (error) {
       console.error('Email/Password Auth Error:', error);
       Alert.alert('Authentication Error', error.message);
@@ -126,7 +118,7 @@ export default function SignInScreen({ auth, navigation }) {
     }
     setLoading(true);
     try {
-      await promptAsync(); // This opens the browser for Google sign-in
+      await promptAsync();
     } catch (error) {
       console.error('Error prompting Google sign-in:', error);
       Alert.alert('Google Sign-In Error', error.message);
@@ -150,14 +142,28 @@ export default function SignInScreen({ auth, navigation }) {
         autoCapitalize="none"
         editable={!loading}
       />
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-        editable={!loading}
-      />
+      {/* Password Input with Toggle */}
+      <View style={styles.passwordInputContainer}>
+        <TextInput
+          style={styles.passwordInput} // Use a new style for the text input itself
+          placeholder="Password"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry={!showPassword} // Toggle secureTextEntry based on state
+          editable={!loading}
+        />
+        <TouchableOpacity
+          style={styles.passwordVisibilityToggle}
+          onPress={() => setShowPassword(prev => !prev)}
+          disabled={loading}
+        >
+          <Ionicons
+            name={showPassword ? 'eye-off' : 'eye'} // Change icon based on state
+            size={24}
+            color="#888"
+          />
+        </TouchableOpacity>
+      </View>
 
       <TouchableOpacity
         style={styles.button}
@@ -215,6 +221,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#555',
   },
+  // Original input style remains for email
   input: {
     width: '100%',
     padding: 15,
@@ -225,11 +232,31 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     fontSize: 16,
   },
+  // NEW styles for password input and toggle
+  passwordInputContainer: {
+    flexDirection: 'row', // Arrange children horizontally
+    alignItems: 'center', // Vertically center items
+    width: '100%',
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    backgroundColor: '#fff',
+  },
+  passwordInput: {
+    flex: 1, // Take up remaining space
+    padding: 15,
+    fontSize: 16,
+  },
+  passwordVisibilityToggle: {
+    padding: 10,
+    marginRight: 5,
+  },
   button: {
     width: '100%',
     padding: 15,
     borderRadius: 8,
-    backgroundColor: '#007AFF', // Primary blue
+    backgroundColor: '#007AFF',
     alignItems: 'center',
     marginBottom: 10,
   },
@@ -239,7 +266,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   googleButton: {
-    backgroundColor: '#DB4437', // Google red
+    backgroundColor: '#DB4437',
   },
   toggleButton: {
     marginTop: 20,
