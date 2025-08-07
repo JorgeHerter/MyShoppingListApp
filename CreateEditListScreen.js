@@ -1,29 +1,38 @@
 // CreateEditListScreen.js
-import { addDoc, collection, doc, serverTimestamp, updateDoc } from "firebase/firestore"; // Import serverTimestamp
+import { addDoc, collection, doc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Button, StyleSheet, Text, TextInput, View } from 'react-native';
 
 export default function CreateEditListScreen({ db, auth, userId, navigation, route }) {
   const [listName, setListName] = useState('');
-  const [itemsText, setItemsText] = useState(''); // Items as a comma-separated string
+  const [itemsText, setItemsText] = useState('');
   const [isSaving, setIsSaving] = useState(false);
-  const [isEditing, setIsEditing] = useState(false); // To determine if we're editing or creating
-  const [currentListId, setCurrentListId] = useState(null); // The ID of the list being edited
+  const [isEditing, setIsEditing] = useState(false);
+  const [currentListId, setCurrentListId] = useState(null);
+  const [isOwner, setIsOwner] = useState(true); // NEW: State to track ownership
 
-  // useEffect to pre-fill form if we are in edit mode
   useEffect(() => {
     if (route.params?.list) {
-      // If list data is passed, it means we are editing
-      const { id, name, items } = route.params.list;
+      const { id, name, items, ownerId } = route.params.list;
       setListName(name);
-      setItemsText(items.join(', ')); // Convert array back to comma-separated string
+      const itemsString = items.map(item => item.name).join(', ');
+      setItemsText(itemsString);
       setIsEditing(true);
       setCurrentListId(id);
-      navigation.setOptions({ title: 'Edit Shopping List' }); // Update header title
+
+      // Check if the current user is the owner
+      const isCurrentUserOwner = ownerId === userId;
+      setIsOwner(isCurrentUserOwner);
+
+      // Update header title based on ownership
+      navigation.setOptions({
+        title: isCurrentUserOwner ? 'Edit Shopping List' : 'View Shopping List',
+      });
     } else {
-      navigation.setOptions({ title: 'Create New List' }); // Update header title
+      setIsOwner(true); // New lists are always owned by the creator
+      navigation.setOptions({ title: 'Create New List' });
     }
-  }, [route.params?.list]); // Only re-run when list param changes
+  }, [route.params?.list, userId]);
 
   const handleSaveList = async () => {
     if (!listName.trim()) {
@@ -37,34 +46,41 @@ export default function CreateEditListScreen({ db, auth, userId, navigation, rou
 
     setIsSaving(true);
     try {
-      const itemsArray = itemsText.split(',').map(item => item.trim()).filter(item => item.length > 0);
+      const itemsArray = itemsText
+        .split(',')
+        .map(item => ({
+          name: item.trim(),
+          checked: false
+        }))
+        .filter(item => item.name.length > 0);
 
-      // Data common to both new and updated lists (for their mutable fields)
       const commonListData = {
         name: listName.trim(),
         items: itemsArray,
-        updatedAt: serverTimestamp(), // Use serverTimestamp for updates
+        updatedAt: serverTimestamp(),
       };
 
       if (isEditing && currentListId) {
-        // Update existing list
+        if (!isOwner) {
+          Alert.alert("Permission Denied", "You can only edit lists you own.");
+          setIsSaving(false);
+          return;
+        }
         const listRef = doc(db, "shoppinglists", currentListId);
-        // ONLY send fields that should be updated. DO NOT send ownerId or createdAt.
-        await updateDoc(listRef, commonListData); // <--- MODIFIED HERE
+        await updateDoc(listRef, commonListData);
         Alert.alert('Success', 'Shopping list updated!');
       } else {
-        // Add new list
         const newListData = {
-          ...commonListData, // Include common fields
-          createdAt: serverTimestamp(), // Add creation timestamp for new documents
-          ownerId: userId, // CRUCIAL: Associate list with the current user ONLY on creation
+          ...commonListData,
+          createdAt: serverTimestamp(),
+          ownerId: userId,
+          sharedWith: [], // Initialize sharedWith array for new lists
         };
-        await addDoc(collection(db, "shoppinglists"), newListData); // <--- MODIFIED HERE
+        await addDoc(collection(db, "shoppinglists"), newListData);
         Alert.alert('Success', 'New shopping list added!');
       }
 
-      navigation.goBack(); // Go back to the ShoppingLists screen
-
+      navigation.goBack();
     } catch (error) {
       console.error("Error saving shopping list:", error);
       Alert.alert('Error', 'Failed to save shopping list: ' + error.message);
@@ -81,7 +97,7 @@ export default function CreateEditListScreen({ db, auth, userId, navigation, rou
         placeholder="e.g., Weekly Groceries"
         value={listName}
         onChangeText={setListName}
-        editable={!isSaving}
+        editable={!isSaving && isOwner} // Disabled if not owner
       />
 
       <Text style={styles.label}>Items (comma-separated):</Text>
@@ -91,15 +107,18 @@ export default function CreateEditListScreen({ db, auth, userId, navigation, rou
         value={itemsText}
         onChangeText={setItemsText}
         multiline
-        editable={!isSaving}
+        editable={!isSaving && isOwner} // Disabled if not owner
       />
 
-      <Button
-        title={isSaving ? "Saving..." : (isEditing ? "Update List" : "Add List")}
-        onPress={handleSaveList}
-        disabled={isSaving}
-        color="#007AFF"
-      />
+      {/* Only show the Save button if the user is the owner */}
+      {isOwner && (
+        <Button
+          title={isSaving ? "Saving..." : (isEditing ? "Update List" : "Add List")}
+          onPress={handleSaveList}
+          disabled={isSaving}
+          color="#007AFF"
+        />
+      )}
 
       {isSaving && <ActivityIndicator size="small" color="#0000ff" style={styles.activityIndicator} />}
     </View>
@@ -130,7 +149,7 @@ const styles = StyleSheet.create({
   },
   itemsInput: {
     minHeight: 80,
-    textAlignVertical: 'top', // For multiline TextInput on Android
+    textAlignVertical: 'top',
   },
   activityIndicator: {
     marginTop: 20,

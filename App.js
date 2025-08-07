@@ -1,13 +1,10 @@
 // App.js
+import { getAnalytics } from "firebase/analytics";
+import { initializeApp } from 'firebase/app';
+import { getFirestore } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 
-// Firebase Imports
-import { getAnalytics } from "firebase/analytics"; // Keep Analytics import here
-import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
-
-// Import ALL Firebase Auth functions directly (modern approach)
 import {
   browserLocalPersistence as _browserLocalPersistence,
   getAuth as _getAuth,
@@ -17,8 +14,6 @@ import {
   setPersistence as _setPersistence,
 } from 'firebase/auth';
 
-// Only import AsyncStorage for React Native platforms
-// Use a try-catch to prevent web build failures if not properly excluded by bundler
 let ReactNativeAsyncStorage;
 try {
   if (Platform.OS !== 'web') {
@@ -28,21 +23,17 @@ try {
   console.warn('Could not import @react-native-async-storage/async-storage. This is expected on web, but an error on native:', error);
 }
 
-// Declare variables to hold platform-specific auth functions
 let onAuthStateChanged, initializeAuth, getReactNativePersistence, getAuth, browserLocalPersistence, setPersistence;
 
-// Conditionally assign based on platform
 if (Platform.OS === 'web') {
   onAuthStateChanged = _onAuthStateChanged;
   getAuth = _getAuth;
   browserLocalPersistence = _browserLocalPersistence;
   setPersistence = _setPersistence;
-  // initializeAuth and getReactNativePersistence are not used on web
 } else {
   onAuthStateChanged = _onAuthStateChanged;
   initializeAuth = _initializeAuth;
   getReactNativePersistence = _getReactNativePersistence;
-  // getAuth, browserLocalPersistence, setPersistence are not used in this specific RN setup logic here
 }
 
 // React Navigation Imports
@@ -51,10 +42,32 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 // Import components
 import CreateEditListScreen from './CreateEditListScreen';
+import ShareListScreen from './ShareListScreen'; // NEW: Import the new screen
 import ShoppingLists from './ShoppingLists';
 import SignInScreen from './SignInScreen';
 
 const Stack = createNativeStackNavigator();
+
+/**
+ * A dedicated component for the authenticated user's navigation stack.
+ * This makes the main App component cleaner.
+ */
+function AppStack({ db, auth, userId }) {
+  return (
+    <Stack.Navigator initialRouteName="ShoppingLists">
+      <Stack.Screen name="ShoppingLists" options={{ title: 'My Shopping Lists' }}>
+        {props => <ShoppingLists {...props} db={db} auth={auth} userId={userId} />}
+      </Stack.Screen>
+      <Stack.Screen name="CreateEditList" options={{ title: 'Shopping List' }}>
+        {props => <CreateEditListScreen {...props} db={db} auth={auth} userId={userId} />}
+      </Stack.Screen>
+      {/* NEW: Add the ShareListScreen to the navigation stack */}
+      <Stack.Screen name="ShareList" options={{ title: 'Share List' }}>
+        {props => <ShareListScreen {...props} db={db} />}
+      </Stack.Screen>
+    </Stack.Navigator>
+  );
+}
 
 export default function App() {
   const [db, setDb] = useState(null);
@@ -65,7 +78,6 @@ export default function App() {
   useEffect(() => {
     async function initializeFirebaseAndAuth() {
       try {
-        // Firebase configuration
         const firebaseConfig = {
           apiKey: "AIzaSyDGQvUaSljmXzsa7aVcUJAv7RK_yarVakc",
           authDomain: "shopping-list-demo-5f3ad.firebaseapp.com",
@@ -76,11 +88,9 @@ export default function App() {
           measurementId: "G-7Z1179RC0V"
         };
 
-        // Initialize Firebase app
         const app = initializeApp(firebaseConfig);
         const firestoreDb = getFirestore(app);
 
-        // Initialize Analytics only if not in development
         if (!__DEV__) {
           try {
             getAnalytics(app);
@@ -89,16 +99,12 @@ export default function App() {
           }
         }
 
-        let firebaseAuthInstance; // Renamed to avoid confusion with the module itself
+        let firebaseAuthInstance;
 
-        // Platform-specific Firebase Auth initialization
         if (Platform.OS === 'web') {
-          // Web-specific Firebase Auth setup
           firebaseAuthInstance = getAuth(app);
-
-          // Set persistence for web
           try {
-            if (setPersistence && browserLocalPersistence) { // Ensure functions are defined
+            if (setPersistence && browserLocalPersistence) {
               await setPersistence(firebaseAuthInstance, browserLocalPersistence);
             } else {
               console.warn('Web persistence functions not available, skipping.');
@@ -107,11 +113,9 @@ export default function App() {
             console.warn('Web persistence setup failed:', persistenceError);
           }
         } else {
-          // React Native-specific Firebase Auth setup
           if (!ReactNativeAsyncStorage || !initializeAuth || !getReactNativePersistence) {
             throw new Error('React Native Firebase Auth dependencies not available. Ensure @react-native-async-storage/async-storage is installed and correctly linked.');
           }
-
           firebaseAuthInstance = initializeAuth(app, {
             persistence: getReactNativePersistence(ReactNativeAsyncStorage)
           });
@@ -120,8 +124,6 @@ export default function App() {
         setDb(firestoreDb);
         setAuth(firebaseAuthInstance);
 
-        // Set up auth state listener
-        // Ensure onAuthStateChanged is defined before calling it
         if (onAuthStateChanged) {
           const unsubscribe = onAuthStateChanged(firebaseAuthInstance, async (user) => {
             if (user) {
@@ -131,13 +133,12 @@ export default function App() {
               console.log("No user signed in. Ready to prompt for sign-in.");
               setUserId(null);
             }
-            setIsLoading(false); // Set loading to false once auth state is determined
+            setIsLoading(false);
           });
-
-          return () => unsubscribe(); // Cleanup the listener
+          return () => unsubscribe();
         } else {
           console.error("onAuthStateChanged function is not defined. Firebase Auth setup issue.");
-          setIsLoading(false); // Stop loading even if auth listener couldn't be set
+          setIsLoading(false);
         }
 
       } catch (error) {
@@ -148,7 +149,7 @@ export default function App() {
     }
 
     initializeFirebaseAndAuth();
-  }, []); // Empty dependency array means this runs once on mount
+  }, []);
 
   if (isLoading) {
     return (
@@ -159,7 +160,6 @@ export default function App() {
     );
   }
 
-  // Handle case where Firebase initialization itself failed (db or auth are null)
   if (!db || !auth) {
     return (
       <View style={styles.errorContainer}>
@@ -168,23 +168,18 @@ export default function App() {
     );
   }
 
-  if (!userId) {
-    // Pass the auth instance to SignInScreen
-    return (
-      <SignInScreen auth={auth} />
-    );
-  }
-
   return (
     <NavigationContainer>
-      <Stack.Navigator initialRouteName="ShoppingLists">
-        <Stack.Screen name="ShoppingLists" options={{ title: 'My Shopping Lists' }}>
-          {props => <ShoppingLists {...props} db={db} auth={auth} userId={userId} />}
-        </Stack.Screen>
-        <Stack.Screen name="CreateEditList" options={{ title: 'Loading...' }}>
-          {props => <CreateEditListScreen {...props} db={db} auth={auth} userId={userId} />}
-        </Stack.Screen>
-      </Stack.Navigator>
+      {/* Conditionally render the appropriate stack based on authentication */}
+      {userId ? (
+        <AppStack db={db} auth={auth} userId={userId} />
+      ) : (
+        <Stack.Navigator>
+          <Stack.Screen name="SignIn" options={{ headerShown: false }}>
+            {props => <SignInScreen {...props} auth={auth} />}
+          </Stack.Screen>
+        </Stack.Navigator>
+      )}
     </NavigationContainer>
   );
 }

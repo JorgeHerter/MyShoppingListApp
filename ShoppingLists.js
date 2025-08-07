@@ -1,6 +1,6 @@
 // ShoppingLists.js
 import { signOut } from 'firebase/auth';
-import { addDoc, collection, deleteDoc, doc, getDocs, query, where } from "firebase/firestore"; // <-- ADD query, where
+import { addDoc, collection, deleteDoc, doc, getDocs, or, query, where } from "firebase/firestore";
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -13,49 +13,51 @@ import {
   TouchableOpacity, View
 } from 'react-native';
 
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+
 export default function ShoppingLists({ db, auth, userId, navigation, route }) {
-
-  console.log("ShoppingLists component rendered. Current userId:", userId);
-
   const [loadingLists, setLoadingLists] = useState(true);
   const [shoppingLists, setShoppingLists] = useState([]);
   const [error, setError] = useState(null);
-
-  // States for the new list form
   const [listName, setListName] = useState("");
   const [item1, setItem1] = useState("");
 
   const fetchShoppingLists = async () => {
     try {
-      console.log("Fetching shopping lists...");
       setLoadingLists(true);
       setError(null);
 
       if (!db || !userId) {
-        console.warn("Firestore DB or User ID not available yet for fetching lists. Skipping fetch.");
         setShoppingLists([]);
         setLoadingLists(false);
         return;
       }
 
-      const q = query(collection(db, "shoppinglists"), where("ownerId", "==", userId));
+      // MODIFIED: Query for lists where the user is either the owner OR is in the 'sharedWith' array
+      const q = query(
+        collection(db, "shoppinglists"),
+        or(where("ownerId", "==", userId), where("sharedWith", "array-contains", userId))
+      );
       const listsDocuments = await getDocs(q);
-
-      console.log(`Fetched documents count for user ${userId}:`, listsDocuments.size);
 
       let newLists = [];
       listsDocuments.forEach(docObject => {
         const data = docObject.data();
-        if (data.name && Array.isArray(data.items) && data.ownerId) {
-          newLists.push({ id: docObject.id, ...data });
+        if (data.name && Array.isArray(data.items)) {
+          const itemsWithChecked = data.items.map(item =>
+            typeof item === 'object' && item !== null && 'name' in item && 'checked' in item
+              ? item
+              : { name: item, checked: false }
+          );
+          // Add a property to easily check if the current user is the owner
+          const isOwner = data.ownerId === userId;
+          newLists.push({ id: docObject.id, ...data, items: itemsWithChecked, isOwner });
         } else {
-          console.warn(`Document ${docObject.id} missing 'name', 'items' array, or 'ownerId'. Skipping.`);
+          console.warn(`Document ${docObject.id} missing 'name', 'items' array. Skipping.`);
         }
       });
 
       setShoppingLists(newLists);
-      console.log("ShoppingLists state updated with:", newLists);
-
     } catch (err) {
       console.error("Error fetching shopping lists:", err);
       setError("Failed to load shopping lists. Please check your internet connection or try again later.");
@@ -72,7 +74,10 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
     }
 
     try {
-      const itemsArray = item1.split(',').map(item => item.trim()).filter(item => item !== '');
+      const itemsArray = item1.split(',').map(item => ({
+        name: item.trim(),
+        checked: false
+      })).filter(item => item.name !== '');
 
       if (itemsArray.length === 0) {
         Alert.alert("Missing Information", "Please enter at least one item.");
@@ -83,16 +88,15 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
         name: listName.trim(),
         items: itemsArray,
         ownerId: userId,
+        sharedWith: [], // NEW: Initialize an empty array for sharing
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
       const newListRef = await addDoc(collection(db, "shoppinglists"), newListData);
-
       if (newListRef.id) {
         fetchShoppingLists();
         Alert.alert(`Success`, `The list "${listName.trim()}" has been added.`);
-
         setListName('');
         setItem1('');
       } else {
@@ -105,66 +109,26 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
   };
 
   const handleDeleteList = (listId, listName) => {
-    console.log("Attempting to delete list (initial call):", listName, "with ID:", listId);
-
     const executeDeletion = async () => {
       try {
-        if (!db) {
-          console.error("Firestore DB object is null or undefined.");
-          Platform.OS === 'web' ? window.alert('Error: Database not initialized. Cannot delete list.') : Alert.alert('Error', 'Database not initialized. Cannot delete list.');
+        if (!db || !userId) {
+          Alert.alert('Error', 'Database not initialized or user not authenticated. Cannot delete list.');
           return;
         }
-        if (!userId) {
-          console.warn("User ID is null or undefined when attempting delete.");
-          Platform.OS === 'web' ? window.alert('Error: User not authenticated. Cannot delete list.') : Alert.alert('Error', 'User not authenticated. Cannot delete list.');
-          return;
-        }
-
         const listDocRef = doc(db, "shoppinglists", listId);
-        console.log("Attempting to delete document reference:", listDocRef.path);
-
         await deleteDoc(listDocRef);
-        console.log("Successfully deleted document:", listId);
-
-        Platform.OS === 'web' ? window.alert(`"${listName}" has been removed.`) : Alert.alert("Deleted!", `"${listName}" has been removed.`);
+        Alert.alert("Deleted!", `"${listName}" has been removed.`);
         fetchShoppingLists();
       } catch (error) {
-        console.error("Error deleting shopping list (catch block):", error);
-        Platform.OS === 'web' ? window.alert("Failed to delete list: " + error.message) : Alert.alert("Error", "Failed to delete list: " + error.message);
+        console.error("Error deleting shopping list:", error);
+        Alert.alert("Error", "Failed to delete list: " + error.message);
       }
     };
 
-    Platform.select({
-      ios: () => {
-        Alert.alert(
-          "Delete List",
-          `Are you sure you want to delete "${listName}"? This cannot be undone.`,
-          [
-            { text: "Cancel", style: "cancel", onPress: () => console.log("Delete cancelled for list:", listId) },
-            { text: "Delete", onPress: executeDeletion, style: "destructive" }
-          ]
-        );
-      },
-      android: () => {
-        Alert.alert(
-          "Delete List",
-          `Are you sure you want to delete "${listName}"? This cannot be undone.`,
-          [
-            { text: "Cancel", style: "cancel", onPress: () => console.log("Delete cancelled for list:", listId) },
-            { text: "Delete", onPress: executeDeletion, style: "destructive" }
-          ]
-        );
-      },
-      web: () => {
-        const confirmed = window.confirm(`Are you sure you want to delete "${listName}"? This cannot be undone.`);
-        if (confirmed) {
-          console.log("Web browser confirm: Delete confirmed.");
-          executeDeletion();
-        } else {
-          console.log("Web browser confirm: Delete cancelled.");
-        }
-      }
-    })();
+    Alert.alert("Delete List", `Are you sure you want to delete "${listName}"?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", onPress: executeDeletion, style: "destructive" }
+    ]);
   };
 
   useEffect(() => {
@@ -173,9 +137,7 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
     } else {
       setShoppingLists([]);
       setLoadingLists(false);
-      console.log("No userId, not fetching shopping lists.");
     }
-
     const unsubscribeFocus = navigation.addListener('focus', () => {
       if (userId) {
         fetchShoppingLists();
@@ -185,18 +147,17 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
   }, [db, userId, navigation]);
 
   const handleEditList = (list) => {
-    if (list.ownerId === userId) {
-      navigation.navigate('CreateEditList', { list: list });
-    } else {
-      Alert.alert("Permission Denied", "You can only edit your own shopping lists.");
-    }
+    // Navigate to the edit screen regardless of ownership, but the screen will handle permissions
+    navigation.navigate('CreateEditList', { list: list });
+  };
+
+  // NEW: Function to navigate to the ShareList screen
+  const handleShareList = (listId, listName) => {
+    navigation.navigate('ShareList', { listId, listName });
   };
 
   const handleSignOut = async () => {
-    if (!auth) {
-      console.warn("Auth object not available for sign out.");
-      return;
-    }
+    if (!auth) return;
     try {
       await signOut(auth);
       console.log("User signed out successfully.");
@@ -204,6 +165,22 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
       console.error("Error signing out:", error);
       Alert.alert("Failed to sign out: " + error.message);
     }
+  };
+
+  const toggleItemChecked = (listId, itemIndex) => {
+    setShoppingLists(currentLists => {
+      return currentLists.map(list => {
+        if (list.id === listId) {
+          const newItems = [...list.items];
+          newItems[itemIndex] = {
+            ...newItems[itemIndex],
+            checked: !newItems[itemIndex].checked,
+          };
+          return { ...list, items: newItems };
+        }
+        return list;
+      });
+    });
   };
 
   if (loadingLists) {
@@ -225,51 +202,29 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
 
   return (
     <View style={styles.container}>
-      {/* Header and Sign Out Button */}
       <View style={styles.headerContainer}>
         <Text style={styles.header}>Your Shopping Lists</Text>
         <Button title="Sign Out" onPress={handleSignOut} color="#dc3545" />
       </View>
-
-      {/* Only show "Logged in as" if userId is available */}
       {userId ? <Text style={styles.userIdText}>Logged in as: {userId}</Text> :
         <Text style={styles.userIdText}>Not logged in.</Text>}
 
-      {/* Only show New List Form if userId is available */}
-      {userId ? (
+      {userId && (
         <View style={styles.listForm}>
-          <TextInput
-            style={styles.listInput}
-            placeholder="List Name"
-            value={listName}
-            onChangeText={setListName}
-          />
-          <TextInput
-            style={styles.listInput}
-            placeholder="Add Items (separated by commas)"
-            value={item1}
-            onChangeText={setItem1}
-          />
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={addShoppingList}
-          >
+          <TextInput style={styles.listInput} placeholder="List Name" value={listName} onChangeText={setListName} />
+          <TextInput style={styles.listInput} placeholder="Add Items (separated by commas)" value={item1} onChangeText={setItem1} />
+          <TouchableOpacity style={styles.addButton} onPress={addShoppingList}>
             <Text style={styles.addButtonText}>Add</Text>
           </TouchableOpacity>
         </View>
-      ) : (
-        <Text style={styles.noListsText}>Please sign in to add or view your shopping lists.</Text>
       )}
 
-      {/* NEW: Click to Edit Hint */}
-      {/* Only show this hint if there are lists and the user is logged in and not loading */}
       {shoppingLists.length > 0 && userId && !loadingLists && (
-        <Text style={styles.editHintText}>Click a list to edit</Text>
+        <Text style={styles.editHintText}>Click a list to view/edit</Text>
       )}
 
-      {/* Conditionally render FlatList or message */}
       {shoppingLists.length === 0 && !loadingLists && userId ? (
-        <Text style={styles.noListsText}>No shopping lists found for you. Start by adding some!</Text>
+        <Text style={styles.noListsText}>No shopping lists found. Start by adding some!</Text>
       ) : (
         <FlatList
           style={styles.listsContainer}
@@ -277,31 +232,62 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
             <View style={styles.listItemContainer}>
-              {/* Only allow editing if the current user owns the list */}
               <TouchableOpacity onPress={() => handleEditList(item)} style={styles.listItem}>
                 <Text style={styles.listName}>{item.name}</Text>
-                <Text style={styles.listItems}>{item.items.join(', ')}</Text>
+                {/* NEW: Display a 'Shared' tag if the user is not the owner */}
+                {!item.isOwner && <Text style={styles.sharedTag}>Shared with you</Text>}
+                <View style={styles.itemsWrapper}>
+                  {item.items.map((listItem, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={styles.itemRow}
+                      onPress={() => toggleItemChecked(item.id, index)}
+                    >
+                      <MaterialCommunityIcons
+                        name={listItem.checked ? "checkbox-marked" : "checkbox-blank-outline"}
+                        size={24}
+                        color={listItem.checked ? "#007AFF" : "#555"}
+                      />
+                      <Text
+                        style={[
+                          styles.listItems,
+                          listItem.checked && styles.strikethroughText,
+                        ]}
+                      >
+                        {listItem.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </TouchableOpacity>
-              {/* Only show delete button if the current user owns the list */}
-              {item.ownerId === userId && (
-                <TouchableOpacity
-                  style={styles.deleteButton}
-                  onPress={() => handleDeleteList(item.id, item.name)}
-                >
-                  <Text style={styles.deleteButtonText}>Delete</Text>
-                </TouchableOpacity>
-              )}
+              <View style={styles.listActions}>
+                {/* NEW: Share button, only visible if the user is the owner */}
+                {item.isOwner && (
+                  <TouchableOpacity onPress={() => handleShareList(item.id, item.name)} style={styles.actionButton}>
+                    <Ionicons name="share-social-outline" size={24} color="#007AFF" />
+                  </TouchableOpacity>
+                )}
+                {/* Delete button, only visible if the user is the owner */}
+                {item.isOwner && (
+                  <TouchableOpacity
+                    style={[styles.actionButton, styles.deleteActionButton]}
+                    onPress={() => handleDeleteList(item.id, item.name)}
+                  >
+                    <Ionicons name="trash-outline" size={24} color="#dc3545" />
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
           )}
         />
       )}
-
       {Platform.OS === "ios" ? <KeyboardAvoidingView behavior="padding" /> : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // ... (existing styles)
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -354,7 +340,7 @@ const styles = StyleSheet.create({
   listsContainer: {
     flex: 1,
     width: '100%',
-    marginTop: 20, // Adjusted margin to accommodate the hint text
+    marginTop: 20,
   },
   listItemContainer: {
     flexDirection: 'row',
@@ -389,20 +375,22 @@ const styles = StyleSheet.create({
     marginBottom: 5,
     color: '#007AFF',
   },
+  itemsWrapper: {
+    flexDirection: 'column',
+  },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 5,
+  },
   listItems: {
     fontSize: 16,
     color: '#555',
+    marginLeft: 5,
   },
-  deleteButton: {
-    backgroundColor: '#dc3545',
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    borderRadius: 5,
-    marginLeft: 10,
-  },
-  deleteButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
+  strikethroughText: {
+    textDecorationLine: 'line-through',
+    color: '#999',
   },
   listForm: {
     width: '100%',
@@ -433,14 +421,34 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     fontSize: 20,
   },
-  // NEW STYLE FOR THE HINT TEXT
   editHintText: {
     fontSize: 14,
-    color: '#888', // A softer grey color
+    color: '#888',
     textAlign: 'center',
-    marginTop: 10, // Space after the new list form
-    marginBottom: 10, // Space before the FlatList
-    fontStyle: 'italic', // Make it slightly distinct
+    marginTop: 10,
+    marginBottom: 10,
+    fontStyle: 'italic',
     width: '100%',
+  },
+  // NEW styles
+  listActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  actionButton: {
+    padding: 8,
+  },
+  deleteActionButton: {
+    marginLeft: 5,
+  },
+  sharedTag: {
+    backgroundColor: '#e9ecef',
+    color: '#6c757d',
+    fontSize: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 5,
+    alignSelf: 'flex-start',
+    marginBottom: 5,
   },
 });
