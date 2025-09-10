@@ -1,73 +1,137 @@
-// ShoppingLists.js
+// ShoppingLists.js - Implemented Offline-First Logic with Fixed Collection Path
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { signOut } from 'firebase/auth';
-import { addDoc, collection, deleteDoc, doc, getDocs, or, query, where } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, doc, onSnapshot, or, query, updateDoc, where } from "firebase/firestore";
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Button, FlatList,
+  Button,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
-  StyleSheet, Text,
+  StyleSheet,
+  Switch,
+  Text,
   TextInput,
-  TouchableOpacity, View
+  TouchableOpacity,
+  View
 } from 'react-native';
 
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
-export default function ShoppingLists({ db, auth, userId, navigation, route }) {
+// App ID for Firestore collections - must match your security rules
+const appId = 'shopping-app';
+
+// We now pass `isConnected` as a prop from App.js
+export default function ShoppingLists({ db, auth, userId, navigation, route, isConnected }) {
   const [loadingLists, setLoadingLists] = useState(true);
   const [shoppingLists, setShoppingLists] = useState([]);
   const [error, setError] = useState(null);
   const [listName, setListName] = useState("");
   const [item1, setItem1] = useState("");
+  const [isPublic, setIsPublic] = useState(false);
+  
+  // Define a constant for the AsyncStorage key to avoid typos
+  const CACHE_KEY_PREFIX = `shopping_lists_${userId}`;
 
-  const fetchShoppingLists = async () => {
-    try {
-      setLoadingLists(true);
-      setError(null);
+  // The main effect to handle both online and offline data fetching
+  useEffect(() => {
+    // Only proceed if the user is authenticated
+    if (!userId) {
+      setLoadingLists(false);
+      return;
+    }
 
-      if (!db || !userId) {
-        setShoppingLists([]);
-        setLoadingLists(false);
-        return;
-      }
-
-      // MODIFIED: Query for lists where the user is either the owner OR is in the 'sharedWith' array
+    // This function will fetch from Firestore and set up the real-time listener
+    const fetchOnlineAndCache = () => {
+      console.log('Online: Attaching onSnapshot listener to Firestore...');
+      // FIXED: Use the correct collection path that matches security rules
       const q = query(
-        collection(db, "shoppinglists"),
-        or(where("ownerId", "==", userId), where("sharedWith", "array-contains", userId))
+        collection(db, `artifacts/${appId}/public/data/shopping_lists`),
+        or(
+          where("ownerId", "==", userId),
+          where("sharedWith", "array-contains", userId)
+        )
       );
-      const listsDocuments = await getDocs(q);
 
-      let newLists = [];
-      listsDocuments.forEach(docObject => {
-        const data = docObject.data();
-        if (data.name && Array.isArray(data.items)) {
-          const itemsWithChecked = data.items.map(item =>
-            typeof item === 'object' && item !== null && 'name' in item && 'checked' in item
-              ? item
-              : { name: item, checked: false }
-          );
-          // Add a property to easily check if the current user is the owner
-          const isOwner = data.ownerId === userId;
-          newLists.push({ id: docObject.id, ...data, items: itemsWithChecked, isOwner });
-        } else {
-          console.warn(`Document ${docObject.id} missing 'name', 'items' array. Skipping.`);
+      // `onSnapshot` is the key to real-time and offline functionality
+      const unsubscribe = onSnapshot(q, async (querySnapshot) => {
+        const fetchedLists = [];
+        querySnapshot.forEach((docObject) => {
+          const data = docObject.data();
+          if (data.name && Array.isArray(data.items)) {
+            const itemsWithChecked = data.items.map(item =>
+              typeof item === 'object' && item !== null && 'name' in item && 'checked' in item
+                ? item
+                : { name: item, checked: false }
+            );
+            const isOwner = data.ownerId === userId;
+            fetchedLists.push({ id: docObject.id, ...data, items: itemsWithChecked, isOwner });
+          }
+        });
+
+        // When new data arrives, cache it locally in AsyncStorage
+        try {
+          await AsyncStorage.setItem(CACHE_KEY_PREFIX, JSON.stringify(fetchedLists));
+          console.log('Lists synchronized and cached locally.');
+        } catch (e) {
+          console.error('Failed to cache lists:', e);
         }
+        setShoppingLists(fetchedLists);
+        setLoadingLists(false);
+        setError(null); // Clear any previous errors
+      }, (error) => {
+        console.error("onSnapshot error:", error);
+        setError("Failed to sync lists. You may be offline.");
+        // If an error occurs (e.g., no network), fall back to cache
+        loadFromCache();
       });
 
-      setShoppingLists(newLists);
-    } catch (err) {
-      console.error("Error fetching shopping lists:", err);
-      setError("Failed to load shopping lists. Please check your internet connection or try again later.");
-    } finally {
-      setLoadingLists(false);
-    }
-  };
+      // Cleanup function to detach the listener when the component unmounts
+      return () => unsubscribe();
+    };
 
+    // This function will load data from AsyncStorage when offline
+    const loadFromCache = async () => {
+      try {
+        setLoadingLists(true);
+        const cachedLists = await AsyncStorage.getItem(CACHE_KEY_PREFIX);
+        if (cachedLists !== null) {
+          console.log('Offline: Loading lists from cache.');
+          setShoppingLists(JSON.parse(cachedLists));
+        } else {
+          console.log('Offline: No cached lists found.');
+          setShoppingLists([]);
+          setError("No cached data available. Connect to the internet to load your lists.");
+        }
+      } catch (e) {
+        console.error("Error loading cached data:", e);
+        setError("Failed to load cached data.");
+      } finally {
+        setLoadingLists(false);
+      }
+    };
+
+    // Main logic that decides whether to go online or offline
+    if (db) {
+      if (isConnected) {
+        // We are online, so fetch from Firestore and enable network
+        return fetchOnlineAndCache();
+      } else {
+        // We are offline, so load from the local cache
+        loadFromCache();
+      }
+    }
+  }, [db, userId, isConnected]);
 
   const addShoppingList = async () => {
+    // Prevent adding lists when offline
+    if (!isConnected) {
+      Alert.alert("Offline", "Cannot add new lists while offline. Please connect to the internet to create new lists.");
+      return;
+    }
+
     if (!listName.trim() || !item1.trim()) {
       Alert.alert("Missing Information", "Please enter a list name and at least one item.");
       return;
@@ -88,74 +152,71 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
         name: listName.trim(),
         items: itemsArray,
         ownerId: userId,
-        sharedWith: [], // NEW: Initialize an empty array for sharing
+        sharedWith: [],
+        isPublic: isPublic,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
-      const newListRef = await addDoc(collection(db, "shoppinglists"), newListData);
-      if (newListRef.id) {
-        fetchShoppingLists();
-        Alert.alert(`Success`, `The list "${listName.trim()}" has been added.`);
-        setListName('');
-        setItem1('');
-      } else {
-        Alert.alert("Error", "Unable to add list. Please try again later.");
-      }
+      // FIXED: Use the correct collection path
+      await addDoc(collection(db, `artifacts/${appId}/public/data/shopping_lists`), newListData);
+      
+      Alert.alert(`Success`, `The list "${listName.trim()}" has been added.`);
+      setListName('');
+      setItem1('');
+      setIsPublic(false);
     } catch (error) {
       console.error("Error adding shopping list:", error);
       Alert.alert("Error adding list", error.message);
     }
   };
 
-  const handleDeleteList = (listId, listName) => {
-    const executeDeletion = async () => {
-      try {
-        if (!db || !userId) {
-          Alert.alert('Error', 'Database not initialized or user not authenticated. Cannot delete list.');
-          return;
-        }
-        const listDocRef = doc(db, "shoppinglists", listId);
-        await deleteDoc(listDocRef);
-        Alert.alert("Deleted!", `"${listName}" has been removed.`);
-        fetchShoppingLists();
-      } catch (error) {
-        console.error("Error deleting shopping list:", error);
-        Alert.alert("Error", "Failed to delete list: " + error.message);
-      }
-    };
-
-    Alert.alert("Delete List", `Are you sure you want to delete "${listName}"?`, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", onPress: executeDeletion, style: "destructive" }
-    ]);
-  };
-
-  useEffect(() => {
-    if (userId) {
-      fetchShoppingLists();
-    } else {
-      setShoppingLists([]);
-      setLoadingLists(false);
+  const handleDeleteList = async (listId, listName) => {
+    if (!isConnected) {
+      Alert.alert("Offline", "Cannot delete lists while offline. Please connect to the internet.");
+      return;
     }
-    const unsubscribeFocus = navigation.addListener('focus', () => {
-      if (userId) {
-        fetchShoppingLists();
-      }
-    });
-    return unsubscribeFocus;
-  }, [db, userId, navigation]);
 
+    Alert.alert(
+      "Confirm Delete",
+      `Are you sure you want to delete the list "${listName}"? This action cannot be undone.`,
+      [
+        {
+          text: "Cancel",
+          style: "cancel"
+        },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const listToDelete = shoppingLists.find(list => list.id === listId);
+              if (!listToDelete || !listToDelete.isOwner) {
+                Alert.alert('Error', 'You can only delete your own lists.');
+                return;
+              }
+              // FIXED: Use the correct collection path
+              const listDocRef = doc(db, `artifacts/${appId}/public/data/shopping_lists`, listId);
+              await deleteDoc(listDocRef);
+              Alert.alert("Success", `"${listName}" has been deleted.`);
+            } catch (error) {
+              console.error("Error deleting shopping list:", error);
+              Alert.alert('Delete Failed', `Error: ${error.message || 'Unknown error'}`);
+            }
+          }
+        }
+      ]
+    );
+  };
+  
   const handleEditList = (list) => {
-    // Navigate to the edit screen regardless of ownership, but the screen will handle permissions
     navigation.navigate('CreateEditList', { list: list });
   };
-
-  // NEW: Function to navigate to the ShareList screen
+  
   const handleShareList = (listId, listName) => {
     navigation.navigate('ShareList', { listId, listName });
   };
-
+  
   const handleSignOut = async () => {
     if (!auth) return;
     try {
@@ -166,8 +227,9 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
       Alert.alert("Failed to sign out: " + error.message);
     }
   };
-
-  const toggleItemChecked = (listId, itemIndex) => {
+  
+  const toggleItemChecked = async (listId, itemIndex) => {
+    // Update local state immediately for better UX
     setShoppingLists(currentLists => {
       return currentLists.map(list => {
         if (list.id === listId) {
@@ -181,13 +243,53 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
         return list;
       });
     });
+
+    // If online, also update Firestore
+    if (isConnected) {
+      try {
+        const list = shoppingLists.find(l => l.id === listId);
+        if (list) {
+          const updatedItems = [...list.items];
+          updatedItems[itemIndex] = {
+            ...updatedItems[itemIndex],
+            checked: !updatedItems[itemIndex].checked,
+          };
+          
+          // FIXED: Use the correct collection path
+          const listDocRef = doc(db, `artifacts/${appId}/public/data/shopping_lists`, listId);
+          await updateDoc(listDocRef, {
+            items: updatedItems,
+            updatedAt: new Date(),
+          });
+        }
+      } catch (error) {
+        console.error("Error updating item:", error);
+        // Revert the local change if Firestore update fails
+        setShoppingLists(currentLists => {
+          return currentLists.map(list => {
+            if (list.id === listId) {
+              const newItems = [...list.items];
+              newItems[itemIndex] = {
+                ...newItems[itemIndex],
+                checked: !newItems[itemIndex].checked,
+              };
+              return { ...list, items: newItems };
+            }
+            return list;
+          });
+        });
+        Alert.alert("Error", "Failed to update item. Please try again.");
+      }
+    }
   };
 
   if (loadingLists) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#0000ff" />
-        <Text>Loading shopping lists...</Text>
+        <Text>
+          {isConnected ? 'Loading shopping lists...' : 'Loading cached lists...'}
+        </Text>
       </View>
     );
   }
@@ -196,6 +298,15 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
     return (
       <View style={styles.errorContainer}>
         <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity 
+          style={styles.retryButton} 
+          onPress={() => {
+            setError(null);
+            setLoadingLists(true);
+          }}
+        >
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -206,25 +317,63 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
         <Text style={styles.header}>Your Shopping Lists</Text>
         <Button title="Sign Out" onPress={handleSignOut} color="#dc3545" />
       </View>
-      {userId ? <Text style={styles.userIdText}>Logged in as: {userId}</Text> :
-        <Text style={styles.userIdText}>Not logged in.</Text>}
+      
+      {/* Connection status indicator */}
+      <View style={styles.statusContainer}>
+        <Text style={[styles.statusText, isConnected ? styles.online : styles.offline]}>
+          {isConnected ? '🟢 Online' : '🔴 Offline'}
+        </Text>
+        {userId ? <Text style={styles.userIdText}>Logged in as: {userId}</Text> :
+          <Text style={styles.userIdText}>Not logged in.</Text>}
+      </View>
 
-      {userId && (
-        <View style={styles.listForm}>
-          <TextInput style={styles.listInput} placeholder="List Name" value={listName} onChangeText={setListName} />
-          <TextInput style={styles.listInput} placeholder="Add Items (separated by commas)" value={item1} onChangeText={setItem1} />
-          <TouchableOpacity style={styles.addButton} onPress={addShoppingList}>
-            <Text style={styles.addButtonText}>Add</Text>
-          </TouchableOpacity>
+      {/* Conditionally render the form based on network status */}
+      <View style={styles.listForm}>
+        <TextInput
+          style={[styles.listInput, !isConnected && styles.disabledInput]}
+          placeholder="List Name"
+          value={listName}
+          onChangeText={setListName}
+          editable={isConnected} // Disable input when offline
+        />
+        <TextInput
+          style={[styles.listInput, !isConnected && styles.disabledInput]}
+          placeholder="Add Items (separated by commas)"
+          value={item1}
+          onChangeText={setItem1}
+          editable={isConnected} // Disable input when offline
+        />
+
+        <View style={styles.privacyToggleContainer}>
+          <Text style={styles.privacyToggleText}>Private</Text>
+          <Switch
+            onValueChange={value => setIsPublic(value)}
+            value={isPublic}
+            trackColor={{ false: "#767577", true: "#007AFF" }}
+            thumbColor={isPublic ? "#f4f3f4" : "#f4f3f4"}
+            ios_backgroundColor="#3e3e3e"
+            disabled={!isConnected} // Disable the switch when offline
+          />
+          <Text style={styles.privacyToggleText}>Public</Text>
         </View>
-      )}
+
+        <TouchableOpacity
+          style={[styles.addButton, !isConnected && styles.disabledButton]}
+          onPress={addShoppingList}
+          disabled={!isConnected} // Disable the button when offline
+        >
+          <Text style={styles.addButtonText}>Add</Text>
+        </TouchableOpacity>
+      </View>
 
       {shoppingLists.length > 0 && userId && !loadingLists && (
         <Text style={styles.editHintText}>Click a list to view/edit</Text>
       )}
 
-      {shoppingLists.length === 0 && !loadingLists && userId ? (
-        <Text style={styles.noListsText}>No shopping lists found. Start by adding some!</Text>
+      {shoppingLists.length === 0 && !loadingLists && userId && !isConnected ? (
+        <Text style={styles.noListsText}>
+          No cached lists found. Connect to the internet to load your lists.
+        </Text>
       ) : (
         <FlatList
           style={styles.listsContainer}
@@ -233,9 +382,11 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
           renderItem={({ item }) => (
             <View style={styles.listItemContainer}>
               <TouchableOpacity onPress={() => handleEditList(item)} style={styles.listItem}>
-                <Text style={styles.listName}>{item.name}</Text>
-                {/* NEW: Display a 'Shared' tag if the user is not the owner */}
-                {!item.isOwner && <Text style={styles.sharedTag}>Shared with you</Text>}
+                <View style={styles.listHeaderRow}>
+                  <Text style={styles.listName}>{item.name}</Text>
+                  {!item.isOwner && <Text style={styles.sharedTag}>Shared with you</Text>}
+                  {item.isPublic && <Text style={styles.publicTag}>Public</Text>}
+                </View>
                 <View style={styles.itemsWrapper}>
                   {item.items.map((listItem, index) => (
                     <TouchableOpacity
@@ -261,14 +412,12 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
                 </View>
               </TouchableOpacity>
               <View style={styles.listActions}>
-                {/* NEW: Share button, only visible if the user is the owner */}
-                {item.isOwner && (
+                {item.isOwner && isConnected && (
                   <TouchableOpacity onPress={() => handleShareList(item.id, item.name)} style={styles.actionButton}>
                     <Ionicons name="share-social-outline" size={24} color="#007AFF" />
                   </TouchableOpacity>
                 )}
-                {/* Delete button, only visible if the user is the owner */}
-                {item.isOwner && (
+                {item.isOwner && isConnected && (
                   <TouchableOpacity
                     style={[styles.actionButton, styles.deleteActionButton]}
                     onPress={() => handleDeleteList(item.id, item.name)}
@@ -287,7 +436,6 @@ export default function ShoppingLists({ db, auth, userId, navigation, route }) {
 }
 
 const styles = StyleSheet.create({
-  // ... (existing styles)
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -305,6 +453,17 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: 'red',
     textAlign: 'center',
+    marginBottom: 20,
+  },
+  retryButton: {
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 5,
+  },
+  retryButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
   },
   container: {
     flex: 1,
@@ -316,19 +475,35 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     width: '100%',
-    marginBottom: 20,
+    marginBottom: 10,
   },
   header: {
     fontSize: 28,
     fontWeight: 'bold',
     color: '#333',
   },
-  userIdText: {
-    fontSize: 14,
-    color: '#666',
+  statusContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 20,
-    textAlign: 'center',
-    width: '100%',
+  },
+  statusText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  online: {
+    color: '#28a745',
+  },
+  offline: {
+    color: '#dc3545',
+  },
+  userIdText: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'right',
+    flex: 1,
+    marginLeft: 10,
   },
   noListsText: {
     fontSize: 16,
@@ -369,10 +544,16 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 15,
   },
+  listHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginBottom: 5,
+  },
   listName: {
     fontSize: 20,
     fontWeight: '600',
-    marginBottom: 5,
+    marginRight: 10,
     color: '#007AFF',
   },
   itemsWrapper: {
@@ -396,7 +577,7 @@ const styles = StyleSheet.create({
     width: '100%',
     marginVertical: 15,
     padding: 15,
-    backgroundColor: "#CCC",
+    backgroundColor: "#e9ecef",
     borderRadius: 8,
   },
   listInput: {
@@ -408,6 +589,11 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: '#FFF',
     fontSize: 16,
+  },
+  disabledInput: {
+    backgroundColor: '#f0f0f0',
+    color: '#999',
+    borderColor: '#ccc',
   },
   addButton: {
     justifyContent: "center",
@@ -430,7 +616,6 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     width: '100%',
   },
-  // NEW styles
   listActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -448,7 +633,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 5,
-    alignSelf: 'flex-start',
-    marginBottom: 5,
+    marginRight: 5,
+  },
+  publicTag: {
+    backgroundColor: '#d1e7dd',
+    color: '#0f5132',
+    fontSize: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 5,
+  },
+  privacyToggleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 15,
+    paddingHorizontal: 15,
+  },
+  privacyToggleText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  disabledButton: {
+    backgroundColor: '#a0a0a0',
   },
 });
